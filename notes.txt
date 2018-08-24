@@ -1,0 +1,5 @@
+1. find a token, format `xoxb-\w{12}-\w{25}`
+1. `wget https://<WORKSPACE>.slack.com/api/emoji.list?token=<TOKEN> -o
+original.json`
+1. `./bin/convert-to-emojipack -j original.json -y original.yml`
+1. `emojipacks -s <NEW_WORKSPACE> -e <USER_EMAIL> -p <USER_PASSWORD_YIKES> -y original.yml

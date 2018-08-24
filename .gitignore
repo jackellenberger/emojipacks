@@ -31,3 +31,7 @@ resized/
 
 # Ignore actual batchUpload.sh
 batchUpload.sh
+
+# working directory
+scratch
+.config.json

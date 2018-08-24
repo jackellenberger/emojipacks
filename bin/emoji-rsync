@@ -1,0 +1,192 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const https = require('https');
+const exec = require('child_process').exec;
+const YAML = require('js-yaml');
+const program = require('commander'),
+  { resolve } = require('path')
+  co = require('co');
+
+function run() {
+  program
+    .version(require('../package').version)
+    .option('-d, --debug', 'Run in debug mode')
+    .option('-c, --config [value]', 'a configuration file to hold required variables otherwise passed in as parameters')
+    .option('--org1 [value]', 'an emoji source/sink')
+    .option('--org1-roles [value]', 'whether this org is a source, sink, or both', /^(source|sink|source,sink|sink,source)$/)
+    .option('--org1-token [value]', 'emoji:read capable token. required if org is a source')
+    .option('--org1-email [value]', 'emoji:write capable user email. required if org is a sink')
+    .option('--org1-password [value]', 'emoji:write capable user password. required if org is a sink')
+    .option('--org2 [value]', 'an emoji source/sink')
+    .option('--org2-roles [value]', 'whether this org is a source, sink, or both', /^(source|sink|source,sink|sink,source)$/)
+    .option('--org2-token [value]', 'emoji:read capable token. required if org is a source')
+    .option('--org2-email [value]', 'emoji:write capable user email. required if org is a sink')
+    .option('--org2-password [value]', 'emoji:write capable user password. required if org is a sink')
+    .option('--diff', 'perform a diff between the two emoji lists and remove duplicates. significant speed boost')
+    .option('-d', '--debug', 'debug / verbose mode')
+    .parse(process.argv);
+  var config = { orgs: [{},{}] };
+
+  if (program.config) {
+    config = require(resolve(process.cwd(), program.config));
+  } else {
+    config.orgs[0] = {
+      name: program.org1,
+      roles: program.org1Roles, 
+      token: program.org1Token,
+      email: program.org1Email,
+      password: program.org1Password
+    },
+    config.orgs[1] = {
+      name: program.org2,
+      roles: program.org2Roles, 
+      token: program.org2Token,
+      email: program.org2Email,
+      password: program.org2Password
+    }
+    config.diff = program.diff || false;
+    config.debug = program.debug || false;
+  }
+  config.token_orgs = config.orgs.filter(org => {
+    return (org.token && org.token != undefined)
+  }).map(org => {return org.name});
+  config.sources = config.orgs.filter(org => {
+    return (org.roles && org.roles.indexOf('source') > -1)
+  }).map(org => {return org.name});
+  config.sinks = config.orgs.filter(org => {
+    return (org.roles && org.roles.indexOf('sink') > -1)
+  }).map(org => {return org.name});
+  validateConfig(config);
+
+  downloadSourceEmojiLists(config).then(config => {
+    if (config.diff) {
+      return performDiff(config); 
+    } else {
+      return config;
+    }
+  }).then(config => {
+    return uploadEmojiLists(config);
+  }).then(config => {
+    return summarize(config);
+  });
+}
+
+// ensure that everything that is required is present
+function validateConfig(config) {
+  return; //TODO
+}
+
+// download emoji list json from sources
+// convert json to yaml for easy processing
+function downloadSourceEmojiLists(config) {
+  return new Promise((resolve, reject) => {
+    config.orgs.map((org, index) => {
+      if (org.token && org.token != undefined) {
+        let file, request;
+        let json = `${org.name}.json`
+        let yaml = `${org.name}.yaml`
+        let url = `https://${org.name}.slack.com/api/emoji.list?token=${org.token}`;
+        let convertCommand = `./bin/convert-to-emojipack -j ${json} -y ${yaml}`;
+
+        if (!org.token) {
+          throw new Error(`Unable to access org ${org.name}. Token required.`);
+        }
+        
+        request = https.get(url, function(response) {
+          if (response.statusCode === 200) {
+            file = fs.createWriteStream(json);
+            response.on('data', function(chunk) {
+              file.write(chunk);
+            }).on('end', function(){
+              file.end();
+            });  
+          } else {
+            throw new Error(`Received non 200 response from ${url}: ${response}`);
+          }
+        }).on('error', (err) => {
+          throw new Error(`Unable to access org ${org.name}: ${err.message}`);
+        })
+
+        exec(convertCommand, {maxBuffer: 1024 * 500}, (err, stdout, stderr) => {
+          if (config.debug) {
+            console.log(convertCommand);
+            console.log(stdout);
+          }
+          if (err) {
+            throw new Error(`unable to convert json ${json} to yaml.\n   ${err}\n   ${stderr}`);
+          }
+
+          org  = Object.assign(config.orgs[index], {
+            json: json,
+            yaml: yaml 
+          });
+          config.orgs[index] = org;
+
+          resolve(config);
+        });
+      }
+    });
+  });
+}
+
+// remove and note potential duplicates from source to sink
+function performDiff(config) {
+  return new Promise((resolve, reject) => {
+    let emojiLists = {};
+    debugger;
+    config.token_orgs.forEach(org => {
+      debugger;
+      let yaml = YAML.safeLoad(fs.readFileSync(resolve(process.cwd(), config.orgs[org].yaml)))['emojis']; 
+      emojiLists[org.name] = yaml.reduce(function(acc, hash) {
+          acc[hash.name] = hash;
+          return acc;
+          }, {});
+    }).bind(this);
+
+    debugger;
+    sources.forEach(org => {
+      config = compare(org, config.sinks, config, emojiLists);
+    });
+
+    resolve(config);
+  });
+}
+
+function compare(source, sinks, config, emojiLists) {
+  debugger;
+  let sourceList = emojiLists[source];
+  let sourceListKeys = Object.keys(sourceList);
+
+  sinks.forEach(sink => {
+    if (!emojiLists[sink]) {
+      // we don't have the token, so we'll try syncing over all source emoji
+      config.orgs[sink] = config.orgs[souce].yaml;
+    } else {
+      let filename = `${source} - ${sink}`;
+      let sinkList = emojiLists[sink];
+      let sinkListKeys = Object.keys(sinkList);
+
+      let diffKeys = sourceListKeys.filter(key => { return sinkListKeys.indexOf(key) < 0 });
+      let diff = { 
+        "title": `custom_uploads_${org}_to_${sink}`,
+        "emojis" : diffKeys.map(key => { return source[key] })
+      }
+
+      fs.writeFileSync(filename, YAML.dump(diff));
+      config.orgs[sink].yaml = filename;
+    }
+  });
+
+  return config;
+}
+
+function uploadEmojiLists(config) {
+  return; //TODO
+}
+
+function summarize(config) {
+  return; //TODO
+}
+
+run();
